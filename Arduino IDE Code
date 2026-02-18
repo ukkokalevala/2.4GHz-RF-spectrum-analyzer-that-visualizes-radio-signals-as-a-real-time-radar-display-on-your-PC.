@@ -1,0 +1,117 @@
+#include <SPI.h>
+#include <RF24.h>
+
+// nRF24L01 pins for ESP-C3-32S-Kit
+#define CE_PIN    4
+#define CSN_PIN   5
+#define SCK_PIN   6
+#define MOSI_PIN  7
+#define MISO_PIN  2
+
+RF24 radio(CE_PIN, CSN_PIN);
+
+#define NUM_CHANNELS 126
+#define BAUD_RATE 115200
+#define SEND_INTERVAL 100  // ms
+
+uint8_t channelData[NUM_CHANNELS];
+unsigned long lastSendTime = 0;
+unsigned long lastActivity = 0;
+int errorCount = 0;
+
+void setup() {
+  Serial.begin(BAUD_RATE);
+  
+  // Give serial time to initialize
+  delay(1000);
+  
+  // Initialize SPI
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, CSN_PIN);
+  
+  // Initialize nRF24 with retry
+  if (!radio.begin()) {
+    // Try again after delay
+    delay(500);
+    if (!radio.begin()) {
+      // Still failed, but continue - Processing will show error
+      Serial.println("RF_WARNING: nRF24 init failed, retrying...");
+    }
+  }
+  
+  // Configure for maximum sensitivity
+  radio.setAutoAck(false);
+  radio.stopListening();
+  radio.setRetries(0, 0);
+  radio.setPALevel(RF24_PA_MAX);
+  radio.setDataRate(RF24_250KBPS);
+  radio.setCRCLength(RF24_CRC_DISABLED);
+  
+  // Send startup message
+  Serial.println("RF_READY: Radar initialized");
+  lastActivity = millis();
+}
+
+void loop() {
+  // Check if we need to reset (prevent freezing)
+  if (millis() - lastActivity > 5000) {
+    // No activity for 5 seconds - reset communication
+    Serial.println("RF_RESET: Resetting communication");
+    delay(100);
+    lastActivity = millis();
+  }
+  
+  // Scan channels
+  scanChannels();
+  
+  // Send data
+  if (millis() - lastSendTime >= SEND_INTERVAL) {
+    sendData();
+    lastSendTime = millis();
+    lastActivity = millis();
+  }
+  
+  // Small delay to prevent watchdog issues
+  delay(1);
+}
+
+void scanChannels() {
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    radio.setChannel(ch);
+    radio.startListening();
+    delayMicroseconds(250);
+    
+    // Read signal with multiple samples
+    uint8_t signal = 0;
+    for (int i = 0; i < 8; i++) {
+      if (radio.testRPD()) {
+        signal++;
+      }
+      delayMicroseconds(30);
+    }
+    channelData[ch] = signal;
+    
+    radio.stopListening();
+    
+    // Small delay between channels to prevent overwhelming
+    if (ch % 20 == 0) {
+      delayMicroseconds(50);
+    }
+  }
+}
+
+void sendData() {
+  // Send header
+  Serial.print("RF_DATA:");
+  
+  // Send data with error checking
+  for (int ch = 0; ch < NUM_CHANNELS; ch++) {
+    Serial.print(channelData[ch]);
+    if (ch < NUM_CHANNELS - 1) {
+      Serial.print(",");
+    }
+  }
+  Serial.println();
+  
+  // Flush serial to prevent buffer overflow
+  Serial.flush();
+}
