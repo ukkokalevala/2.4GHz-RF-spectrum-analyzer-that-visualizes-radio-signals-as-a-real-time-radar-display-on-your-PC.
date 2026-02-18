@@ -1,0 +1,271 @@
+/**
+ * RF Radar Display for Processing
+ * Receives data from ESP32-C3 via Serial on COM8
+ */
+
+import processing.serial.*;
+
+Serial serialPort;
+String portName = "COM8"; // Changed to COM8 for your ESP32
+
+int numChannels = 126;
+int[] channelData = new int[126];
+int[] channelPeaks = new int[126];
+
+float radarAngle = 0;
+boolean dataReceived = false;
+int lastDataTime = 0;
+int packetsReceived = 0;
+
+String lastRawData = "";
+String debugMessage = "Connecting to COM8...";
+
+public void setup() {
+  size(900, 700);
+  
+  // Initialize arrays
+  for (int i = 0; i < numChannels; i++) {
+    channelData[i] = 0;
+    channelPeaks[i] = 0;
+  }
+  
+  // List available ports
+  println("Available serial ports:");
+  String[] ports = Serial.list();
+  for (int i = 0; i < ports.length; i++) {
+    println("[" + i + "] " + ports[i]);
+  }
+  
+  // Try to connect to COM8
+  try {
+    serialPort = new Serial(this, "COM8", 115200);
+    serialPort.bufferUntil('\n');
+    println("Connected to COM8");
+    debugMessage = "Connected to COM8";
+  } catch (Exception e) {
+    println("Error connecting to COM8: " + e);
+    debugMessage = "Error connecting to COM8";
+    
+    // Try other ports as fallback
+    for (int i = 0; i < ports.length; i++) {
+      try {
+        serialPort = new Serial(this, ports[i], 115200);
+        serialPort.bufferUntil('\n');
+        println("Connected to " + ports[i]);
+        debugMessage = "Connected to " + ports[i];
+        break;
+      } catch (Exception e2) {
+        // Skip
+      }
+    }
+  }
+  
+  surface.setTitle("RF Radar - 2.4GHz Spectrum Analyzer");
+}
+
+public void draw() {
+  background(0);
+  
+  // Check connection status
+  if (millis() - lastDataTime > 3000) {
+    dataReceived = false;
+  }
+  
+  // Draw main displays
+  drawRadarDisplay();
+  drawSpectrumAnalyzer();
+  drawDebugPanel();
+  
+  // Update radar rotation
+  radarAngle += 0.02;
+  if (radarAngle > TWO_PI) {
+    radarAngle = 0;
+  }
+}
+
+void drawRadarDisplay() {
+  pushMatrix();
+  translate(250, 250);
+  
+  // Draw radar circles
+  stroke(0, 100, 0);
+  noFill();
+  for (int r = 50; r <= 200; r += 50) {
+    ellipse(0, 0, r*2, r*2);
+  }
+  
+  // Draw crosshairs
+  stroke(0, 80, 0);
+  line(-200, 0, 200, 0);
+  line(0, -200, 0, 200);
+  
+  // Draw detected signals
+  boolean anySignal = false;
+  for (int ch = 0; ch < numChannels; ch++) {
+    if (channelData[ch] > 0) {
+      anySignal = true;
+      float angle = map(ch, 0, numChannels, 0, TWO_PI);
+      float strength = channelData[ch] / 10.0;
+      float distance = 50 + (strength * 150);
+      
+      float x = distance * cos(angle + radarAngle);
+      float y = distance * sin(angle + radarAngle);
+      
+      // Draw signal
+      float alpha = map(strength, 0, 1, 100, 255);
+      stroke(0, 255, 0, alpha);
+      fill(0, 255, 0, alpha/3);
+      ellipse(x, y, 10 + strength*20, 10 + strength*20);
+    }
+  }
+  
+  // Show status
+  if (!anySignal && dataReceived) {
+    fill(100, 100, 0);
+    text("NO RF SIGNALS", -50, 0);
+  } else if (!dataReceived) {
+    fill(255, 0, 0);
+    text("NO DATA", -30, 0);
+  }
+  
+  // Draw sweep line
+  stroke(0, 255, 0, 50);
+  float sweepX = 200 * cos(radarAngle);
+  float sweepY = 200 * sin(radarAngle);
+  line(0, 0, sweepX, sweepY);
+  
+  // Draw sweep head
+  noStroke();
+  fill(0, 255, 0);
+  ellipse(sweepX, sweepY, 8, 8);
+  
+  // Draw center
+  fill(0, 255, 0);
+  ellipse(0, 0, 10, 10);
+  
+  popMatrix();
+}
+
+void drawSpectrumAnalyzer() {
+  pushMatrix();
+  translate(550, 80);
+  
+  int barWidth = 3;
+  int spacing = 1;
+  int maxHeight = 150;
+  
+  // Draw background
+  stroke(50);
+  line(0, 0, 0, maxHeight);
+  line(0, maxHeight, 250, maxHeight);
+  
+  // Draw bars
+  boolean anySignal = false;
+  for (int i = 0; i < 50; i++) {
+    int ch = i * 2;
+    if (ch < numChannels) {
+      int barHeight = (int)(channelData[ch] * 10);
+      int x = i * (barWidth + spacing);
+      
+      if (barHeight > 0) {
+        anySignal = true;
+        noStroke();
+        fill(0, 255, 0, 150);
+        rect(x, maxHeight - barHeight, barWidth, barHeight);
+      }
+    }
+  }
+  
+  popMatrix();
+}
+
+void drawDebugPanel() {
+  int x = 20;
+  int y = 450;
+  
+  // Connection status
+  fill(0, 255, 0);
+  text("RF RADAR - DEBUG", x, y);
+  
+  if (dataReceived) {
+    fill(0, 255, 0);
+    text("Status: ONLINE (COM8)", x, y + 20);
+    text("Packets: " + packetsReceived, x, y + 35);
+    text("Last data: " + (millis() - lastDataTime) + "ms ago", x, y + 50);
+    
+    // Calculate statistics
+    int activeChannels = 0;
+    for (int i = 0; i < numChannels; i++) {
+      if (channelData[i] > 0) activeChannels++;
+    }
+    
+    text("Active channels: " + activeChannels, x, y + 65);
+    
+    if (activeChannels > 0) {
+      fill(0, 255, 0);
+    } else {
+      fill(255, 255, 0);
+    }
+    text("RF Activity: " + (activeChannels > 0 ? "YES" : "NO"), x, y + 80);
+    
+  } else {
+    fill(255, 0, 0);
+    text("Status: OFFLINE", x, y + 20);
+    text("Check ESP32 on COM8", x, y + 35);
+  }
+  
+  // Debug messages
+  fill(200, 200, 0);
+  text("Debug: " + debugMessage, x, y + 110);
+  text("Last raw: " + lastRawData, x, y + 125);
+  
+  // Controls
+  fill(100);
+  text("Controls: R=Reset, P=List Ports", x, y + 155);
+}
+
+public void serialEvent(Serial p) {
+  String data = p.readStringUntil('\n');
+  if (data != null) {
+    data = data.trim();
+    lastRawData = data;
+    
+    if (data.startsWith("RF_DATA:")) {
+      String values = data.substring(8);
+      String[] strData = values.split(",");
+      
+      if (strData.length == numChannels) {
+        for (int i = 0; i < numChannels; i++) {
+          try {
+            int val = Integer.parseInt(strData[i].trim());
+            channelData[i] = val;
+          } catch (Exception e) {
+            // Skip invalid data
+          }
+        }
+        packetsReceived++;
+        lastDataTime = millis();
+        dataReceived = true;
+        debugMessage = "Data received";
+      }
+    } else if (data.length() > 0) {
+      debugMessage = data;
+    }
+  }
+}
+
+public void keyPressed() {
+  if (key == 'r' || key == 'R') {
+    // Reset
+    packetsReceived = 0;
+    debugMessage = "Reset";
+  }
+  
+  if (key == 'p' || key == 'P') {
+    println("\nAvailable serial ports:");
+    String[] ports = Serial.list();
+    for (int i = 0; i < ports.length; i++) {
+      println("[" + i + "] " + ports[i]);
+    }
+  }
+}
